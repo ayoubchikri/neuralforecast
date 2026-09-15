@@ -1,0 +1,75 @@
+name: Validate decoder width
+
+on:
+  push:
+    branches: [verify/decoder-width]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  decoder-width:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: f541017c72ca48a53679a47962f39a2e4b096a0e
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install supported CPU dependencies
+        run: |
+          uv venv
+          uv pip install --torch-backend cpu -e . 'torch==2.9.1' pytest pytest-cov polars
+          uv pip freeze
+      - name: Reproduce all six regressions on upstream source
+        run: |
+          .venv/bin/python - <<'PY'
+          import pathlib
+          import subprocess
+          import xml.etree.ElementTree as ET
+
+          source = pathlib.Path('neuralforecast/common/_modules.py')
+          fixed = source.read_bytes()
+          try:
+              source.write_bytes(subprocess.check_output([
+                  'git', 'show', 'cda3022d76999840e448310ed800ef65bffad702:neuralforecast/common/_modules.py'
+              ]))
+              result = subprocess.run([
+                  '.venv/bin/python', '-m', 'pytest', '--no-cov', '-q',
+                  'tests/test_common/test_modules.py', 'tests/test_models/test_deepar.py',
+                  '-k', 'nonpositive_hidden_size or zero_width_decoder',
+                  '--junitxml=before.xml'
+              ])
+              suites = ET.parse('before.xml').getroot().findall('testsuite')
+              assert result.returncode == 1, result.returncode
+              assert sum(int(s.attrib['failures']) for s in suites) == 6
+              assert sum(int(s.attrib['errors']) for s in suites) == 0
+          finally:
+              source.write_bytes(fixed)
+          PY
+          git diff --exit-code
+      - name: Test corrected decoder and recurrent models
+        run: |
+          .venv/bin/python -m pytest --no-cov -q \
+            tests/test_common/test_modules.py \
+            tests/test_models/test_deepar.py \
+            tests/test_models/test_rnn.py \
+            tests/test_models/test_lstm.py \
+            tests/test_models/test_gru.py \
+            tests/test_models/test_tcn.py \
+            tests/test_models/test_dilated_rnn.py \
+            -k 'not test_auto' --junitxml=after.xml
+          git diff --exit-code
