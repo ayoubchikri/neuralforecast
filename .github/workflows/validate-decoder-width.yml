@@ -61,6 +61,43 @@ jobs:
               source.write_bytes(fixed)
           PY
           git diff --exit-code
+      - name: Verify the existing pandas 3 monthly-frequency failure on upstream
+        if: matrix.python == '3.12'
+        run: |
+          .venv/bin/python - <<'PY'
+          import pathlib
+          import subprocess
+          import xml.etree.ElementTree as ET
+
+          source = pathlib.Path('neuralforecast/common/_modules.py')
+          fixed = source.read_bytes()
+          try:
+              source.write_bytes(subprocess.check_output([
+                  'git', 'show', 'cda3022d76999840e448310ed800ef65bffad702:neuralforecast/common/_modules.py'
+              ]))
+              result = subprocess.run([
+                  '.venv/bin/python', '-m', 'pytest', '--no-cov', '-q',
+                  'tests/test_models/test_deepar.py::test_deepar',
+                  'tests/test_models/test_rnn.py::test_rnn_model',
+                  'tests/test_models/test_lstm.py::test_lstm_model',
+                  'tests/test_models/test_gru.py::test_gru',
+                  'tests/test_models/test_tcn.py::test_tcn_model',
+                  'tests/test_models/test_dilated_rnn.py::test_dilated_rnn',
+                  '--junitxml=pandas3-baseline.xml'
+              ])
+              suites = ET.parse('pandas3-baseline.xml').getroot().findall('testsuite')
+              assert result.returncode == 1
+              assert sum(int(s.attrib['failures']) for s in suites) == 6
+              assert sum(int(s.attrib['errors']) for s in suites) == 0
+              for suite in suites:
+                  for failure in suite.iter('failure'):
+                      assert 'Invalid frequency: M' in failure.attrib['message']
+          finally:
+              source.write_bytes(fixed)
+          PY
+          git diff --exit-code
+      - name: Use the pandas version in the project's lockfile
+        run: uv pip install 'pandas==2.3.2'
       - name: Test corrected decoder and recurrent models
         run: |
           .venv/bin/python -m pytest --no-cov -q \
